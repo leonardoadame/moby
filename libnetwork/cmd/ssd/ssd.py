@@ -47,17 +47,16 @@ def check_iptables(name, plist):
 def get_namespaces(data, ingress=False):
     if ingress is True:
         return {"Ingress":"/var/run/docker/netns/ingress_sbox"}
-    else:
-        spaces =[]
-        for c in data["Containers"]:
-            sandboxes = {str(c) for c in data["Containers"]}
+    spaces =[]
+    for c in data["Containers"]:
+        sandboxes = {str(c) for c in data["Containers"]}
 
-        containers = {}
-        for s in sandboxes:
-            spaces.append(str(cli.inspect_container(s)["NetworkSettings"]["SandboxKey"]))
-            inspect = cli.inspect_container(s)
-            containers[str(inspect["Name"])] = str(inspect["NetworkSettings"]["SandboxKey"])
-        return containers
+    containers = {}
+    for s in sandboxes:
+        spaces.append(str(cli.inspect_container(s)["NetworkSettings"]["SandboxKey"]))
+        inspect = cli.inspect_container(s)
+        containers[str(inspect["Name"])] = str(inspect["NetworkSettings"]["SandboxKey"])
+    return containers
 
 
 def check_network(nw_name, ingress=False):
