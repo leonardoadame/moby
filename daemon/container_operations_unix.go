@@ -1,5 +1,4 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package daemon // import "github.com/docker/docker/daemon"
 
@@ -11,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/docker/docker/container"
+	"github.com/docker/docker/daemon/config"
 	"github.com/docker/docker/daemon/links"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/libnetwork"
@@ -381,7 +381,7 @@ func serviceDiscoveryOnDefaultNetwork() bool {
 	return false
 }
 
-func (daemon *Daemon) setupPathsAndSandboxOptions(container *container.Container, sboxOptions *[]libnetwork.SandboxOption) error {
+func (daemon *Daemon) setupPathsAndSandboxOptions(container *container.Container, cfg *config.Config, sboxOptions *[]libnetwork.SandboxOption) error {
 	var err error
 
 	// Set the correct paths for /etc/hosts and /etc/resolv.conf, based on the
@@ -428,7 +428,7 @@ func (daemon *Daemon) setupPathsAndSandboxOptions(container *container.Container
 		// Copy the host's resolv.conf for the container (/run/systemd/resolve/resolv.conf or /etc/resolv.conf)
 		*sboxOptions = append(
 			*sboxOptions,
-			libnetwork.OptionOriginResolvConfPath(daemon.configStore.GetResolvConf()),
+			libnetwork.OptionOriginResolvConfPath(cfg.GetResolvConf()),
 		)
 	}
 

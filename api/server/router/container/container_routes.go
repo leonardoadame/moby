@@ -44,7 +44,7 @@ func (s *containerRouter) postCommit(ctx context.Context, w http.ResponseWriter,
 	}
 
 	config, _, _, err := s.decoder.DecodeConfig(r.Body)
-	if err != nil && err != io.EOF { // Do not fail if body is empty.
+	if err != nil && !errors.Is(err, io.EOF) { // Do not fail if body is empty.
 		return err
 	}
 
@@ -486,6 +486,9 @@ func (s *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 
 	config, hostConfig, networkingConfig, err := s.decoder.DecodeConfig(r.Body)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return errdefs.InvalidParameter(errors.New("invalid JSON: got EOF while reading request body"))
+		}
 		return err
 	}
 	version := httputils.VersionFromContext(ctx)
@@ -583,6 +586,18 @@ func (s *containerRouter) postContainersCreate(ctx context.Context, w http.Respo
 		// Both `0` and `-1` are accepted as "unlimited", and historically any
 		// negative value was accepted, so treat those as "unlimited" as well.
 		hostConfig.PidsLimit = nil
+	}
+
+	if hostConfig != nil && versions.LessThan(version, "1.44") {
+		for _, m := range hostConfig.Mounts {
+			if m.BindOptions != nil {
+				// Ignore ReadOnlyNonRecursive because it was added in API 1.44.
+				m.BindOptions.ReadOnlyNonRecursive = false
+				if m.BindOptions.ReadOnlyForceRecursive {
+					return errdefs.InvalidParameter(errors.New("BindOptions.ReadOnlyForceRecursive needs API v1.44 or newer"))
+				}
+			}
+		}
 	}
 
 	ccr, err := s.backend.ContainerCreate(ctx, types.ContainerCreateConfig{

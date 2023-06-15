@@ -1,5 +1,4 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package daemon // import "github.com/docker/docker/daemon"
 
@@ -105,7 +104,10 @@ func getMemoryResources(config containertypes.Resources) *specs.LinuxMemory {
 		memory.KernelTCP = &config.KernelMemoryTCP
 	}
 
-	return &memory
+	if memory != (specs.LinuxMemory{}) {
+		return &memory
+	}
+	return nil
 }
 
 func getPidsLimit(config containertypes.Resources) *specs.LinuxPids {
@@ -127,7 +129,7 @@ func getCPUResources(config containertypes.Resources) (*specs.LinuxCPU, error) {
 	if config.CPUShares < 0 {
 		return nil, fmt.Errorf("shares: invalid argument")
 	}
-	if config.CPUShares >= 0 {
+	if config.CPUShares > 0 {
 		shares := uint64(config.CPUShares)
 		cpu.Shares = &shares
 	}
@@ -168,7 +170,10 @@ func getCPUResources(config containertypes.Resources) (*specs.LinuxCPU, error) {
 		cpu.RealtimeRuntime = &c
 	}
 
-	return &cpu, nil
+	if cpu != (specs.LinuxCPU{}) {
+		return &cpu, nil
+	}
+	return nil, nil
 }
 
 func getBlkioWeightDevices(config containertypes.Resources) ([]specs.LinuxWeightDevice, error) {
@@ -190,8 +195,8 @@ func getBlkioWeightDevices(config containertypes.Resources) ([]specs.LinuxWeight
 	return blkioWeightDevices, nil
 }
 
-func (daemon *Daemon) parseSecurityOpt(securityOptions *container.SecurityOptions, hostConfig *containertypes.HostConfig) error {
-	securityOptions.NoNewPrivileges = daemon.configStore.NoNewPrivileges
+func (daemon *Daemon) parseSecurityOpt(cfg *config.Config, securityOptions *container.SecurityOptions, hostConfig *containertypes.HostConfig) error {
+	securityOptions.NoNewPrivileges = cfg.NoNewPrivileges
 	return parseSecurityOpt(securityOptions, hostConfig)
 }
 
@@ -300,7 +305,7 @@ func adjustParallelLimit(n int, limit int) int {
 
 // adaptContainerSettings is called during container creation to modify any
 // settings necessary in the HostConfig structure.
-func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConfig, adjustCPUShares bool) error {
+func (daemon *Daemon) adaptContainerSettings(daemonCfg *config.Config, hostConfig *containertypes.HostConfig, adjustCPUShares bool) error {
 	if adjustCPUShares && hostConfig.CPUShares > 0 {
 		// Handle unsupported CPUShares
 		if hostConfig.CPUShares < linuxMinCPUShares {
@@ -317,15 +322,15 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
 	}
 	if hostConfig.ShmSize == 0 {
 		hostConfig.ShmSize = config.DefaultShmSize
-		if daemon.configStore != nil {
-			hostConfig.ShmSize = int64(daemon.configStore.ShmSize)
+		if daemonCfg != nil {
+			hostConfig.ShmSize = int64(daemonCfg.ShmSize)
 		}
 	}
 	// Set default IPC mode, if unset for container
 	if hostConfig.IpcMode.IsEmpty() {
 		m := config.DefaultIpcMode
-		if daemon.configStore != nil {
-			m = containertypes.IpcMode(daemon.configStore.IpcMode)
+		if daemonCfg != nil {
+			m = containertypes.IpcMode(daemonCfg.IpcMode)
 		}
 		hostConfig.IpcMode = m
 	}
@@ -341,8 +346,8 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
 			if cgroups.Mode() == cgroups.Unified {
 				m = containertypes.CgroupnsModePrivate
 			}
-			if daemon.configStore != nil {
-				m = containertypes.CgroupnsMode(daemon.configStore.CgroupNamespaceMode)
+			if daemonCfg != nil {
+				m = containertypes.CgroupnsMode(daemonCfg.CgroupNamespaceMode)
 			}
 			hostConfig.CgroupnsMode = m
 		}
@@ -567,11 +572,11 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, sysIn
 	return warnings, nil
 }
 
-func (daemon *Daemon) getCgroupDriver() string {
-	if UsingSystemd(daemon.configStore) {
+func cgroupDriver(cfg *config.Config) string {
+	if UsingSystemd(cfg) {
 		return cgroupSystemdDriver
 	}
-	if daemon.Rootless() {
+	if cfg.Rootless {
 		return cgroupNoneDriver
 	}
 	return cgroupFsDriver
@@ -640,7 +645,7 @@ func isRunningSystemd() bool {
 
 // verifyPlatformContainerSettings performs platform-specific validation of the
 // hostconfig and config structures.
-func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.HostConfig, update bool) (warnings []string, err error) {
+func verifyPlatformContainerSettings(daemon *Daemon, daemonCfg *configStore, hostConfig *containertypes.HostConfig, update bool) (warnings []string, err error) {
 	if hostConfig == nil {
 		return nil, nil
 	}
@@ -681,7 +686,7 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.
 	}
 
 	// check for various conflicting options with user namespaces
-	if daemon.configStore.RemappedRoot != "" && hostConfig.UsernsMode.IsPrivate() {
+	if daemonCfg.RemappedRoot != "" && hostConfig.UsernsMode.IsPrivate() {
 		if hostConfig.Privileged {
 			return warnings, fmt.Errorf("privileged mode is incompatible with user namespaces.  You must run the container in the host namespace when running privileged mode")
 		}
@@ -692,17 +697,17 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.
 			return warnings, fmt.Errorf("cannot share the host PID namespace when user namespaces are enabled")
 		}
 	}
-	if hostConfig.CgroupParent != "" && UsingSystemd(daemon.configStore) {
+	if hostConfig.CgroupParent != "" && UsingSystemd(&daemonCfg.Config) {
 		// CgroupParent for systemd cgroup should be named as "xxx.slice"
 		if len(hostConfig.CgroupParent) <= 6 || !strings.HasSuffix(hostConfig.CgroupParent, ".slice") {
 			return warnings, fmt.Errorf("cgroup-parent for systemd cgroup should be a valid slice named as \"xxx.slice\"")
 		}
 	}
 	if hostConfig.Runtime == "" {
-		hostConfig.Runtime = daemon.configStore.GetDefaultRuntimeName()
+		hostConfig.Runtime = daemonCfg.Runtimes.Default
 	}
 
-	if _, _, err := daemon.getRuntime(hostConfig.Runtime); err != nil {
+	if _, _, err := daemonCfg.Runtimes.Get(hostConfig.Runtime); err != nil {
 		return warnings, err
 	}
 
@@ -754,15 +759,6 @@ func verifyDaemonSettings(conf *config.Config) error {
 
 	if conf.Rootless && UsingSystemd(conf) && cgroups.Mode() != cgroups.Unified {
 		return fmt.Errorf("exec-opt native.cgroupdriver=systemd requires cgroup v2 for rootless mode")
-	}
-
-	configureRuntimes(conf)
-	if rtName := conf.GetDefaultRuntimeName(); rtName != "" {
-		if conf.GetRuntime(rtName) == nil {
-			if !config.IsPermissibleC8dRuntimeName(rtName) {
-				return fmt.Errorf("specified default runtime '%s' does not exist", rtName)
-			}
-		}
 	}
 	return nil
 }
@@ -838,8 +834,8 @@ func configureKernelSecuritySupport(config *config.Config, driverName string) er
 // initNetworkController initializes the libnetwork controller and configures
 // network settings. If there's active sandboxes, configuration changes will not
 // take effect.
-func (daemon *Daemon) initNetworkController(activeSandboxes map[string]interface{}) error {
-	netOptions, err := daemon.networkOptions(daemon.PluginStore, activeSandboxes)
+func (daemon *Daemon) initNetworkController(cfg *config.Config, activeSandboxes map[string]interface{}) error {
+	netOptions, err := daemon.networkOptions(cfg, daemon.PluginStore, activeSandboxes)
 	if err != nil {
 		return err
 	}
@@ -851,12 +847,12 @@ func (daemon *Daemon) initNetworkController(activeSandboxes map[string]interface
 
 	if len(activeSandboxes) > 0 {
 		logrus.Info("there are running containers, updated network configuration will not take affect")
-	} else if err := configureNetworking(daemon.netController, daemon.configStore); err != nil {
+	} else if err := configureNetworking(daemon.netController, cfg); err != nil {
 		return err
 	}
 
 	// Set HostGatewayIP to the default bridge's IP if it is empty
-	setHostGatewayIP(daemon.netController, daemon.configStore)
+	setHostGatewayIP(daemon.netController, cfg)
 	return nil
 }
 
@@ -1394,36 +1390,18 @@ func (daemon *Daemon) registerLinks(container *container.Container, hostConfig *
 // conditionalMountOnStart is a platform specific helper function during the
 // container start to call mount.
 func (daemon *Daemon) conditionalMountOnStart(container *container.Container) error {
-	if !daemon.UsesSnapshotter() {
-		return daemon.Mount(container)
-	}
-	return nil
+	return daemon.Mount(container)
 }
 
 // conditionalUnmountOnCleanup is a platform specific helper function called
 // during the cleanup of a container to unmount.
 func (daemon *Daemon) conditionalUnmountOnCleanup(container *container.Container) error {
-	if !daemon.UsesSnapshotter() {
-		return daemon.Unmount(container)
-	}
-	return nil
+	return daemon.Unmount(container)
 }
 
 // setDefaultIsolation determines the default isolation mode for the
 // daemon to run in. This is only applicable on Windows
-func (daemon *Daemon) setDefaultIsolation() error {
-	return nil
-}
-
-// setupDaemonProcess sets various settings for the daemon's process
-func setupDaemonProcess(config *config.Config) error {
-	// setup the daemons oom_score_adj
-	if err := setupOOMScoreAdj(config.OOMScoreAdjust); err != nil {
-		return err
-	}
-	if err := setMayDetachMounts(); err != nil {
-		logrus.WithError(err).Warn("Could not set may_detach_mounts kernel parameter")
-	}
+func (daemon *Daemon) setDefaultIsolation(*config.Config) error {
 	return nil
 }
 
@@ -1456,38 +1434,14 @@ func setMayDetachMounts() error {
 	return err
 }
 
-func setupOOMScoreAdj(score int) error {
-	if score == 0 {
-		return nil
-	}
-	f, err := os.OpenFile("/proc/self/oom_score_adj", os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	stringScore := strconv.Itoa(score)
-	_, err = f.WriteString(stringScore)
-	if os.IsPermission(err) {
-		// Setting oom_score_adj does not work in an
-		// unprivileged container. Ignore the error, but log
-		// it if we appear not to be in that situation.
-		if !userns.RunningInUserNS() {
-			logrus.Debugf("Permission denied writing %q to /proc/self/oom_score_adj", stringScore)
-		}
-		return nil
-	}
-
-	return err
-}
-
-func (daemon *Daemon) initCPURtController(mnt, path string) error {
+func (daemon *Daemon) initCPURtController(cfg *config.Config, mnt, path string) error {
 	if path == "/" || path == "." {
 		return nil
 	}
 
 	// Recursively create cgroup to ensure that the system and all parent cgroups have values set
 	// for the period and runtime as this limits what the children can be set to.
-	if err := daemon.initCPURtController(mnt, filepath.Dir(path)); err != nil {
+	if err := daemon.initCPURtController(cfg, mnt, filepath.Dir(path)); err != nil {
 		return err
 	}
 
@@ -1495,10 +1449,10 @@ func (daemon *Daemon) initCPURtController(mnt, path string) error {
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return err
 	}
-	if err := maybeCreateCPURealTimeFile(daemon.configStore.CPURealtimePeriod, "cpu.rt_period_us", path); err != nil {
+	if err := maybeCreateCPURealTimeFile(cfg.CPURealtimePeriod, "cpu.rt_period_us", path); err != nil {
 		return err
 	}
-	return maybeCreateCPURealTimeFile(daemon.configStore.CPURealtimeRuntime, "cpu.rt_runtime_us", path)
+	return maybeCreateCPURealTimeFile(cfg.CPURealtimeRuntime, "cpu.rt_runtime_us", path)
 }
 
 func maybeCreateCPURealTimeFile(configValue int64, file string, path string) error {
@@ -1508,8 +1462,8 @@ func maybeCreateCPURealTimeFile(configValue int64, file string, path string) err
 	return os.WriteFile(filepath.Join(path, file), []byte(strconv.FormatInt(configValue, 10)), 0700)
 }
 
-func (daemon *Daemon) setupSeccompProfile() error {
-	switch profile := daemon.configStore.SeccompProfile; profile {
+func (daemon *Daemon) setupSeccompProfile(cfg *config.Config) error {
+	switch profile := cfg.SeccompProfile; profile {
 	case "", config.SeccompProfileDefault:
 		daemon.seccompProfilePath = config.SeccompProfileDefault
 	case config.SeccompProfileUnconfined:
@@ -1525,9 +1479,9 @@ func (daemon *Daemon) setupSeccompProfile() error {
 	return nil
 }
 
-func getSysInfo(daemon *Daemon) *sysinfo.SysInfo {
+func getSysInfo(cfg *config.Config) *sysinfo.SysInfo {
 	var siOpts []sysinfo.Opt
-	if daemon.getCgroupDriver() == cgroupSystemdDriver {
+	if cgroupDriver(cfg) == cgroupSystemdDriver {
 		if euid := os.Getenv("ROOTLESSKIT_PARENT_EUID"); euid != "" {
 			siOpts = append(siOpts, sysinfo.WithCgroup2GroupPath("/user.slice/user-"+euid+".slice"))
 		}
@@ -1535,13 +1489,13 @@ func getSysInfo(daemon *Daemon) *sysinfo.SysInfo {
 	return sysinfo.New(siOpts...)
 }
 
-func (daemon *Daemon) initLibcontainerd(ctx context.Context) error {
+func (daemon *Daemon) initLibcontainerd(ctx context.Context, cfg *config.Config) error {
 	var err error
 	daemon.containerd, err = remote.NewClient(
 		ctx,
 		daemon.containerdCli,
-		filepath.Join(daemon.configStore.ExecRoot, "containerd"),
-		daemon.configStore.ContainerdNamespace,
+		filepath.Join(cfg.ExecRoot, "containerd"),
+		cfg.ContainerdNamespace,
 		daemon,
 	)
 	return err

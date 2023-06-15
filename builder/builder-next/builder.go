@@ -78,6 +78,7 @@ var cacheFields = map[string]bool{
 type Opt struct {
 	SessionManager      *session.Manager
 	Root                string
+	EngineID            string
 	Dist                images.DistributionServices
 	ImageTagger         mobyexporter.ImageTagger
 	NetworkController   *libnetwork.Controller
@@ -354,11 +355,7 @@ func (b *Builder) Build(ctx context.Context, opt backend.BuildConfig) (*builder.
 	exporterName := ""
 	exporterAttrs := map[string]string{}
 	if len(opt.Options.Outputs) == 0 {
-		if b.useSnapshotter {
-			exporterName = client.ExporterImage
-		} else {
-			exporterName = exporter.Moby
-		}
+		exporterName = exporter.Moby
 	} else {
 		// cacheonly is a special type for triggering skipping all exporters
 		if opt.Options.Outputs[0].Type != "cacheonly" {

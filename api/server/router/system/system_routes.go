@@ -31,7 +31,7 @@ func (s *systemRouter) pingHandler(ctx context.Context, w http.ResponseWriter, r
 	w.Header().Add("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Add("Pragma", "no-cache")
 
-	builderVersion := build.BuilderVersion(*s.features)
+	builderVersion := build.BuilderVersion(s.features())
 	if bv := builderVersion; bv != "" {
 		w.Header().Set("Builder-Version", string(bv))
 	}
@@ -183,6 +183,11 @@ func (s *systemRouter) getDiskUsage(ctx context.Context, w http.ResponseWriter, 
 			// Parent field is deprecated in API v1.42 and up, as it is deprecated
 			// in BuildKit. Empty the field to omit it in the API response.
 			b.Parent = "" //nolint:staticcheck // ignore SA1019 (Parent field is deprecated)
+		}
+	}
+	if versions.LessThan(version, "1.44") {
+		for _, b := range systemDiskUsage.Images {
+			b.VirtualSize = b.Size //nolint:staticcheck // ignore SA1019: field is deprecated, but still set on API < v1.44.
 		}
 	}
 

@@ -470,16 +470,10 @@ func (n *networkNamespace) Destroy() error {
 }
 
 // Restore restore the network namespace
-func (n *networkNamespace) Restore(ifsopt map[string][]IfaceOption, routes []*types.StaticRoute, gw net.IP, gw6 net.IP) error {
+func (n *networkNamespace) Restore(ifsopt map[Iface][]IfaceOption, routes []*types.StaticRoute, gw net.IP, gw6 net.IP) error {
 	// restore interfaces
 	for name, opts := range ifsopt {
-		if !strings.Contains(name, "+") {
-			return fmt.Errorf("wrong iface name in restore osl sandbox interface: %s", name)
-		}
-		seps := strings.Split(name, "+")
-		srcName := seps[0]
-		dstPrefix := seps[1]
-		i := &nwIface{srcName: srcName, dstName: dstPrefix, ns: n}
+		i := &nwIface{srcName: name.SrcName, dstName: name.DstPrefix, ns: n}
 		i.processInterfaceOptions(opts...)
 		if i.master != "" {
 			i.dstMaster = n.findDst(i.master, true)
@@ -531,7 +525,7 @@ func (n *networkNamespace) Restore(ifsopt map[string][]IfaceOption, routes []*ty
 			}
 
 			var index int
-			indexStr := strings.TrimPrefix(i.dstName, dstPrefix)
+			indexStr := strings.TrimPrefix(i.dstName, name.DstPrefix)
 			if indexStr != "" {
 				index, err = strconv.Atoi(indexStr)
 				if err != nil {
@@ -540,8 +534,8 @@ func (n *networkNamespace) Restore(ifsopt map[string][]IfaceOption, routes []*ty
 			}
 			index++
 			n.Lock()
-			if index > n.nextIfIndex[dstPrefix] {
-				n.nextIfIndex[dstPrefix] = index
+			if index > n.nextIfIndex[name.DstPrefix] {
+				n.nextIfIndex[name.DstPrefix] = index
 			}
 			n.iFaces = append(n.iFaces, i)
 			n.Unlock()
@@ -600,24 +594,29 @@ func (n *networkNamespace) checkLoV6() {
 }
 
 func setIPv6(nspath, iface string, enable bool) error {
-	origNS, err := netns.Get()
-	if err != nil {
-		return fmt.Errorf("failed to get current network namespace: %w", err)
-	}
-	defer origNS.Close()
-
-	namespace, err := netns.GetFromPath(nspath)
-	if err != nil {
-		return fmt.Errorf("failed get network namespace %q: %w", nspath, err)
-	}
-	defer namespace.Close()
-
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(errCh)
 
+		namespace, err := netns.GetFromPath(nspath)
+		if err != nil {
+			errCh <- fmt.Errorf("failed get network namespace %q: %w", nspath, err)
+			return
+		}
+		defer namespace.Close()
+
 		runtime.LockOSThread()
+
+		origNS, err := netns.Get()
+		if err != nil {
+			runtime.UnlockOSThread()
+			errCh <- fmt.Errorf("failed to get current network namespace: %w", err)
+			return
+		}
+		defer origNS.Close()
+
 		if err = netns.Set(namespace); err != nil {
+			runtime.UnlockOSThread()
 			errCh <- fmt.Errorf("setting into container netns %q failed: %w", nspath, err)
 			return
 		}

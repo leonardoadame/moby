@@ -351,7 +351,7 @@ echo "  - \"$(wrap_color 'overlay' blue)\":"
 check_flags VXLAN BRIDGE_VLAN_FILTERING | sed 's/^/    /'
 echo '      Optional (for encrypted networks):'
 check_flags CRYPTO CRYPTO_AEAD CRYPTO_GCM CRYPTO_SEQIV CRYPTO_GHASH \
-	XFRM XFRM_USER XFRM_ALGO INET_ESP | sed 's/^/      /'
+	XFRM XFRM_USER XFRM_ALGO INET_ESP NETFILTER_XT_MATCH_BPF | sed 's/^/      /'
 if [ "$kernelMajor" -lt 5 ] || [ "$kernelMajor" -eq 5 -a "$kernelMinor" -le 3 ]; then
 	check_flags INET_XFRM_MODE_TRANSPORT | sed 's/^/      /'
 fi
@@ -371,11 +371,6 @@ echo '- Storage Drivers:'
 echo "  - \"$(wrap_color 'btrfs' blue)\":"
 check_flags BTRFS_FS | sed 's/^/    /'
 check_flags BTRFS_FS_POSIX_ACL | sed 's/^/    /'
-[ "$EXITCODE" = 0 ] && STORAGE=0
-EXITCODE=0
-
-echo "  - \"$(wrap_color 'devicemapper' blue)\":"
-check_flags BLK_DEV_DM DM_THIN_PROVISIONING | sed 's/^/    /'
 [ "$EXITCODE" = 0 ] && STORAGE=0
 EXITCODE=0
 

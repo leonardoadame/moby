@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package daemon // import "github.com/docker/docker/daemon"
 
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/daemon/config"
 	"github.com/docker/docker/pkg/plugingetter"
 	"github.com/docker/docker/pkg/plugins"
 	"github.com/docker/docker/plugin"
@@ -20,8 +20,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func (daemon *Daemon) listenMetricsSock() (string, error) {
-	path := filepath.Join(daemon.configStore.ExecRoot, "metrics.sock")
+func (daemon *Daemon) listenMetricsSock(cfg *config.Config) (string, error) {
+	path := filepath.Join(cfg.ExecRoot, "metrics.sock")
 	unix.Unlink(path)
 	l, err := net.Listen("unix", path)
 	if err != nil {

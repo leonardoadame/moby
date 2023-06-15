@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
 	containerddefaults "github.com/containerd/containerd/defaults"
 	"github.com/docker/docker/api"
 	apiserver "github.com/docker/docker/api/server"
@@ -241,6 +242,18 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		return errors.Wrap(err, "failed to validate authorization plugin")
 	}
 
+	// Note that CDI is not inherrently linux-specific, there are some linux-specific assumptions / implementations in the code that
+	// queries the properties of device on the host as wel as performs the injection of device nodes and their access permissions into the OCI spec.
+	//
+	// In order to lift this restriction the following would have to be addressed:
+	// - Support needs to be added to the cdi package for injecting Windows devices: https://github.com/container-orchestrated-devices/container-device-interface/issues/28
+	// - The DeviceRequests API must be extended to non-linux platforms.
+	if runtime.GOOS == "linux" && cli.Config.Experimental {
+		daemon.RegisterCDIDriver(
+			cdi.WithSpecDirs(cli.Config.CDISpecDirs...),
+		)
+	}
+
 	cli.d = d
 
 	if err := startMetricsServer(cli.Config.MetricsAddress); err != nil {
@@ -324,7 +337,7 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 type routerOptions struct {
 	sessionManager *session.Manager
 	buildBackend   *buildbackend.Backend
-	features       *map[string]bool
+	features       func() map[string]bool
 	buildkit       *buildkit.Builder
 	daemon         *daemon.Daemon
 	cluster        *cluster.Cluster
@@ -344,20 +357,21 @@ func newRouterOptions(ctx context.Context, config *config.Config, d *daemon.Daem
 	cgroupParent := newCgroupParent(config)
 	ro := routerOptions{
 		sessionManager: sm,
-		features:       d.Features(),
+		features:       d.Features,
 		daemon:         d,
 	}
 
 	bk, err := buildkit.New(ctx, buildkit.Opt{
 		SessionManager:      sm,
 		Root:                filepath.Join(config.Root, "buildkit"),
+		EngineID:            d.ID(),
 		Dist:                d.DistributionServices(),
 		ImageTagger:         d.ImageService(),
 		NetworkController:   d.NetworkController(),
 		DefaultCgroupParent: cgroupParent,
-		RegistryHosts:       d.RegistryHosts(),
+		RegistryHosts:       d.RegistryHosts,
 		BuilderConfig:       config.Builder,
-		Rootless:            d.Rootless(),
+		Rootless:            daemon.Rootless(config),
 		IdentityMapping:     d.IdentityMapping(),
 		DNSConfig:           config.DNSConfig,
 		ApparmorProfile:     daemon.DefaultApparmorProfile(),
@@ -383,17 +397,20 @@ func newRouterOptions(ctx context.Context, config *config.Config, d *daemon.Daem
 
 func (cli *DaemonCli) reloadConfig() {
 	reload := func(c *config.Config) {
-		// Revalidate and reload the authorization plugins
 		if err := validateAuthzPlugins(c.AuthorizationPlugins, cli.d.PluginStore); err != nil {
 			logrus.Fatalf("Error validating authorization plugin: %v", err)
 			return
 		}
-		cli.authzMiddleware.SetPlugins(c.AuthorizationPlugins)
 
 		if err := cli.d.Reload(c); err != nil {
 			logrus.Errorf("Error reconfiguring the daemon: %v", err)
 			return
 		}
+
+		// Apply our own configuration only after the daemon reload has succeeded. We
+		// don't want to partially apply the config if the daemon is unhappy with it.
+
+		cli.authzMiddleware.SetPlugins(c.AuthorizationPlugins)
 
 		if c.IsValueSet("debug") {
 			debugEnabled := debug.IsEnabled()
@@ -579,9 +596,9 @@ func (opts routerOptions) Build() []router.Router {
 			opts.daemon.ImageService().DistributionServices().ImageStore,
 			opts.daemon.ImageService().DistributionServices().LayerStore,
 		),
-		systemrouter.NewRouter(opts.daemon, opts.cluster, opts.buildkit, opts.features),
+		systemrouter.NewRouter(opts.daemon, opts.cluster, opts.buildkit, opts.daemon.Features),
 		volume.NewRouter(opts.daemon.VolumesService(), opts.cluster),
-		build.NewRouter(opts.buildBackend, opts.daemon, opts.features),
+		build.NewRouter(opts.buildBackend, opts.daemon),
 		sessionrouter.NewRouter(opts.sessionManager),
 		swarmrouter.NewRouter(opts.cluster),
 		pluginrouter.NewRouter(opts.daemon.PluginManager()),
@@ -629,11 +646,7 @@ func initMiddlewares(s *apiserver.Server, cfg *config.Config, pluginStore plugin
 }
 
 func (cli *DaemonCli) getContainerdDaemonOpts() ([]supervisor.DaemonOpt, error) {
-	opts, err := cli.getPlatformContainerdDaemonOpts()
-	if err != nil {
-		return nil, err
-	}
-
+	var opts []supervisor.DaemonOpt
 	if cli.Debug {
 		opts = append(opts, supervisor.WithLogLevel("debug"))
 	} else {
